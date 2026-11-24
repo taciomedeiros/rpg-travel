@@ -13,33 +13,38 @@ Ao final você poderá:
 - Jogar e acompanhar o histórico de eventos em uma linha do tempo;
 - Voltar para qualquer ponto da história sem modificar eventos passados;
 - Entrar com a conta Google e recuperar dados persistidos no Firestore;
-- Investigar comandos inválidos, duplicados e concorrentes;
+- Entender por que comandos inválidos não devem produzir eventos;
 - Publicar a aplicação diretamente pelo Google AI Studio no Cloud Run.
+
+**Percurso principal:** etapas 1 a 5 e 8. Projeções adicionais, snapshots, idempotência e simulações de concorrência ficam nas etapas opcionais 6 e 7. Uma API própria é uma evolução posterior.
 
 ### Arquitetura do projeto
 
 ```mermaid
 flowchart TD
-  A[React: ações do jogador] --> B[API Node.js: comandos autenticados]
-  B --> C{CharacterAggregate: valida regras}
+  A[React: ações do jogador] --> C{CharacterAggregate: regras no navegador}
   C -->|Comando rejeitado| D[Erro de domínio: nenhum evento]
-  C -->|Comando válido| E[Firestore: transação append-only]
-  E --> F[Event Store: eventos por versão]
+  C -->|Comando válido| E[SDK web do Firebase: transação]
+  B[Firebase Authentication: Google Sign-In] --> E
+  E --> R[Firestore Security Rules: acesso e formato]
+  R --> F[Firestore: eventos por versão]
   F --> G[Replay: aplica eventos em ordem]
   G --> H[Projeções: ficha e estatísticas]
   G --> I[Time Travel: estado histórico]
 ```
 
-**Importante:** o Firestore é a fonte durável dos **eventos**. Fichas atuais, gráficos e snapshots são **dados derivados**. A validação de comandos ocorre no servidor, não apenas na interface.
+**Importante:** o Firestore é a fonte durável dos **eventos**. A ficha é uma projeção calculada no navegador por replay, sem precisar salvar o estado atual em outra coleção. O frontend usa o SDK web do Firebase; as Security Rules controlam o acesso ao banco. O percurso principal não exige API própria.
 
 ## 0. Pré-requisitos e preparação
 
 1. Entre com uma conta Google (de preferência pessoal) em [Google AI Studio — Apps](https://aistudio.google.com/apps).
-2. Tenha acesso ao [Firebase Console](https://console.firebase.google.com/) e ao [Google Cloud Console](https://console.cloud.google.com/).
+2. Use a mesma conta Google no AI Studio, no [Firebase Console](https://console.firebase.google.com/) e no [Google Cloud Console](https://console.cloud.google.com/).
 3. Confira se a conta permite ativar integrações e publicar serviços; políticas de organizações podem restringir essas operações.
 4. Verifique **custos, cotas e elegibilidade de tiers gratuitos** antes de criar recursos ou efetuar deploy. O Starter Tier e suas condições podem variar; um projeto padrão pode exigir faturamento habilitado.
-5. Reserve um projeto Google Cloud/Firebase para a atividade. Evite usar um projeto de produção.
+5. Na etapa 4, use a integração do AI Studio para provisionar os recursos. Não é necessário criar manualmente um projeto ou banco antes de começar; se escolher um projeto existente, use um projeto vazio dedicado à atividade.
 6. Abra este README em outra aba e mantenha **um único app no AI Studio** durante todas as etapas.
+
+Uma segunda conta Google serve apenas para testar o isolamento dos dados; pode ser a conta de outro participante. Ela não precisa de acesso administrativo ao projeto.
 
 **Sobre este repositório:** os prompts são o material de laboratório. O código da aplicação é **gerado no AI Studio** e não está pressuposto neste repositório. Caso queira versioná-lo, exporte o código gerado e adicione-o posteriormente em uma pasta `app/` ou em outro repositório, preservando segredos fora do Git.
 
@@ -126,10 +131,6 @@ No painel direito exiba a timeline de eventos em ordem de versão, com tipo, ver
 Crie testes para replay determinístico e casos de comando inválido. Ainda não adicione Firebase nem Firestore.
 ```
 
-**O que observar:** um comando descreve uma intenção (`Battle`); um evento descreve um fato consumado (`BattleCompleted`). Se uma compra for rejeitada, **nenhum evento** deverá ser salvo.
-
-**Aceite quando:** `replayEvents(todosOsEventos)` reproduzir exatamente os atributos exibidos e nenhuma ação inválida gerar evento.
-
 ### Exemplo ilustrativo de evento
 
 ```json
@@ -181,44 +182,37 @@ Ao retornar ao presente, use todos os eventos para reconstruir o estado verdadei
 
 ### Antes de colar o prompt
 
-O Google AI Studio pode apresentar um card **Enable Firebase / Ativar Firebase** ao detectar a necessidade de autenticação e banco. Siga o fluxo de autorização e, se aplicável, selecione o projeto Google Cloud correto nas configurações da integração. Também é possível encontrar a integração em **Settings → Integrations** (os nomes dos controles podem mudar).
+Peça a integração no próprio AI Studio. Quando aparecer o card **Enable Firebase / Ativar Firebase**, siga o fluxo de autorização e deixe a integração provisionar Firestore e Authentication. Se quiser escolher projeto ou região, use as configurações do card antes de confirmar. Também é possível encontrar a integração em **Settings → Integrations** (os nomes dos controles podem mudar).
 
 A documentação oficial alerta que, ao vincular um projeto existente que já tenha Firestore, o provisionamento automático de outro banco pode não ser possível; escolha um projeto compatível ou vazio para a atividade.
 
-### Prompt 4 — Persistência segura
+### Prompt 4 — Firebase como backend
 
 ```text
-Integre o RPG Time Machine ao Firebase Authentication (Google Sign-In) e Cloud Firestore usando a integração oficial disponível no Google AI Studio. Preserve o gameplay e o Time Travel.
+Integre o RPG Time Machine ao Firebase usando a integração oficial do Google AI Studio. Preserve o gameplay e o Time Travel.
 
-Arquitetura obrigatória:
-- React/TypeScript no frontend;
-- backend Node.js com endpoints autenticados para listar eventos, consultar estado e executar comandos;
-- validação de Firebase ID Token em cada endpoint privado;
-- verificação de identidade do proprietário do personagem no servidor;
-- nenhuma credencial administrativa no bundle do navegador;
-- nenhuma escrita direta de eventos pelo frontend.
+Use React/TypeScript, Firebase Authentication com Google Sign-In e Cloud Firestore. Deixe a integração provisionar e configurar os serviços. O frontend deve acessar o Firestore pelo SDK web do Firebase, protegido por Security Rules, sem criar uma API própria ou usar o SDK Admin.
 
 No Firestore, modele:
-users/{uid}/characters/{characterId} : metadados e versão do agregado
+users/{uid}/characters/{characterId} : metadados e versão atual
 users/{uid}/characters/{characterId}/events/{eventId} : eventos append-only
-users/{uid}/characters/{characterId}/projections/current : estado derivado
 
-A coleção de eventos é a fonte da verdade. Ordene eventos por version. Gere IDs únicos e use uma chave de idempotência por comando.
+A coleção de eventos é a fonte da verdade. Carregue os eventos por version e reconstrua a ficha com replayEvents. Calcule o estado atual no navegador, sem persistir uma projeção separada.
 
-Cada comando deve:
-1. Autenticar o usuário e resolver seu próprio personagem.
-2. Ler a versão atual e dados necessários à validação.
-3. Validar regras de domínio.
-4. Persistir o(s) evento(s), a nova versão e a projeção em uma transação atômica do Firestore, detectando conflitos concorrentes.
-5. Retornar resultado coerente para o frontend.
+Ao entrar, carregue o personagem do usuário. Para um novo usuário, crie o personagem e o evento CharacterCreated juntos, em uma transação, somente se o personagem ainda não existir. Ao sair ou trocar de conta, limpe os dados locais da sessão anterior.
 
-Não faça efeitos colaterais externos dentro de uma função de transação que pode ser reexecutada. Garanta reprocessamento seguro de comandos repetidos.
+Para cada ação, valide as regras do jogo no estado reconstruído. Use uma transação do SDK web para criar o evento com ID único e atualizar a versão do personagem juntos. Se a versão no banco divergir da usada para validar a ação, cancele, recarregue os eventos e peça para repetir a ação; não salve um evento calculado sobre estado desatualizado. Desabilite os botões enquanto uma gravação estiver em andamento e só confirme a ação na interface após o sucesso.
 
-Security Rules: não permitir gravação de eventos ou projeções por clientes Firestore; leituras diretas, quando necessárias, devem ser limitadas ao próprio usuário. Todas as operações de escrita passam pelo backend autenticado. Verifique o acesso usando duas contas distintas.
+Não atualize o React nem faça outros efeitos colaterais dentro da função de transação, pois ela pode ser reexecutada.
 
-Use identidades e credenciais gerenciadas pelo ambiente; não gere um JSON de chave privada nem exponha segredos. Se a integração não permitir o backend seguro exigido, identifique a limitação e peça correção; não contorne o problema liberando escrita pública.
+Gere e aplique Security Rules que:
+- exijam login e correspondência entre request.auth.uid e o uid do caminho, inclusive nas subcoleções;
+- permitam ler e criar eventos somente do próprio usuário;
+- validem os campos, tipos, aggregateId, tipos de evento permitidos e version como inteiro positivo, com incremento sequencial e correspondência entre evento e personagem na transação;
+- impeçam atualizar ou excluir eventos existentes e excluir o personagem pelo cliente;
+- neguem acesso a caminhos não previstos.
 
-Mostre loading, erros de autenticação e erros de rede de forma amigável. Não destrua eventos existentes. Gere testes de persistência e concorrência quando a infraestrutura permitir.
+Use a configuração web fornecida pela integração. Não gere chaves privadas nem inclua credenciais administrativas no navegador. Mostre loading e erros de login, gravação e rede. Não destrua eventos existentes. Verifique persistência após reload e isolamento entre usuários.
 ```
 
 ### Verificações no Firebase Console
@@ -226,13 +220,13 @@ Mostre loading, erros de autenticação e erros de rede de forma amigável. Não
 1. Entre no app usando **Google Sign-In**.
 2. Faça 3–5 ações e atualize a página: os eventos devem continuar lá.
 3. Abra [Firebase Console](https://console.firebase.google.com/) → projeto → **Firestore Database** → **Data/Dados**. Examine os documentos e suas versões.
-4. Examine a aba **Rules/Regras** e confirme que o cliente não pode alterar eventos.
+4. Examine a aba **Rules/Regras**. Pelo simulador de regras ou por testes do SDK, confira que o próprio usuário pode ler e criar eventos válidos, mas não pode atualizar/excluir eventos nem acessar dados de outro usuário. Requisições sem login e eventos malformados também devem ser negados.
 5. Em **Authentication**, confira o usuário criado.
 6. Se possível, teste com outra conta Google; ela **não** deve acessar o personagem da primeira.
 
-**Aceite quando:** a partida persistir após reload e houver isolamento efetivo dos dados por usuário.
+**Aceite quando:** a partida persistir após reload, a ficha for reconstruída dos eventos e as regras de acesso, formato e imutabilidade tiverem sido verificadas.
 
-> **Cuidado:** as regras do Firestore não limitam automaticamente os privilégios de um SDK administrativo no servidor. Por isso o backend **precisa** verificar o ID Token e o dono do recurso em cada requisição.
+> **Escopo didático:** as regras do jogo rodam no navegador. As Security Rules protegem acesso, formato e eventos já gravados, mas não reexecutam todo o domínio. Um cliente modificado pode tentar fabricar novos eventos próprios que passem nessas regras. Validação confiável contra trapaças fica na evolução com backend ao final do guia.
 
 ---
 
@@ -251,14 +245,16 @@ handleCommand(state, command): DomainEvent[]
 
 Centralize todas as regras: HP, ouro, XP, limite de cura, espada única, personagem morto e subida de nível. Comandos inválidos não produzem eventos. Registre nos eventos os resultados necessários para replay determinístico.
 
-No backend, processe comandos com verificação de propriedade e expectedVersion e persistência atômica no Firestore. Retorne erros compreensíveis para regras violadas e conflitos de versão. Não use validação exclusiva do frontend.
+Mantenha o CharacterAggregate como um módulo TypeScript executado no navegador, separado dos componentes React e do acesso ao Firebase. O módulo recebe estado e comando e retorna eventos; a camada de persistência usa a transação do SDK web criada na etapa 4. Não adicione servidor, endpoints ou SDK Admin.
+
+Mostre mensagens compreensíveis para regras violadas e falhas de gravação. Atualize a ficha e a timeline a partir dos eventos confirmados. Preserve as Security Rules existentes; a validação do jogo no navegador não substitui as regras de acesso ao banco.
 
 Adicione um pequeno painel educativo mostrando o fluxo Command → Aggregate → Domain Event → Event Store → Projection, destacando os passos de cada ação. Preserve tudo o que já funciona.
 ```
 
 **Experimente:** tente comprar a espada com menos de 30 de ouro. Confirme que surgiu um erro **sem novo evento**. Tente também comprar duas vezes.
 
-**Aceite quando:** a timeline refletir somente ações aceitas pelo domínio.
+**Aceite quando:** pela interface do jogo, comandos inválidos não gerarem eventos e a timeline refletir somente eventos confirmados no Firestore.
 
 ---
 
@@ -276,14 +272,13 @@ Adicione projeções derivadas do mesmo Event Store:
 
 Exiba gráficos simples para Progression e um botão Rebuild Projections que recalcule os dados usando todos os eventos em ordem de version. O processo deve ser idempotente e não alterar o Event Store.
 
-Crie snapshots a cada 10 eventos confirmados em:
-users/{uid}/characters/{characterId}/snapshots/{version}
+Crie snapshots em memória a cada 10 eventos confirmados. Mantenha projeções e snapshots locais nesta extensão, sem adicionar coleções ou alterar as Security Rules do Firestore. Após reload, faça replay completo para reconstruí-los.
 
-Cada snapshot contém aggregateId, version, state, schemaVersion e createdAt. Para recuperar o estado, use o snapshot compatível mais recente e aplique somente os eventos posteriores.
+Cada snapshot contém aggregateId, version, state, schemaVersion e createdAt. Para reconstruir um estado, use o snapshot compatível mais recente cuja versão não ultrapasse a versão consultada e aplique somente os eventos posteriores até ela.
 
 Exiba uma comparação didática entre replay completo e replay a partir do snapshot (quantidade de eventos processados, sem prometer ganho de desempenho).
 
-Não remova nem modifique eventos antigos. Preserve autenticação e isolamento por usuário.
+Não remova nem modifique eventos antigos. Preserve autenticação e isolamento por usuário; descarte projeções e snapshots locais ao sair ou trocar de conta.
 ```
 
 **Aceite quando:** uma reconstrução desde o início e outra usando snapshot resultarem exatamente na mesma ficha.
@@ -297,20 +292,20 @@ Não remova nem modifique eventos antigos. Preserve autenticação e isolamento 
 ### Prompt 7 — Laboratório de bugs
 
 ```text
-Crie uma aba educativa chamada Debug Lab, isolada por usuário, sem afetar os eventos reais do personagem principal.
+Crie uma aba educativa chamada Debug Lab com um Event Store de teste em memória, separado dos dados reais do personagem principal. Não escreva no Firestore nem crie API para essas experiências. Descarte os dados locais do laboratório ao sair ou trocar de conta.
 
 Inclua três experiências com explicações antes e depois de executar:
 
 A. Corrupted Projection: altere apenas uma cópia local da projeção de ouro; mostre a inconsistência e reconstrua a projeção correta a partir dos eventos.
 
-B. Duplicated Command: envie duas vezes o mesmo comando com a mesma chave de idempotência; somente um evento deve ser criado.
+B. Duplicated Command: implemente uma chave de idempotência no Event Store de teste e envie duas vezes o mesmo comando com a mesma chave; somente um evento deve ser criado nesse histórico local.
 
-C. Concurrent Commands: simule duas compras sobre a mesma versão esperada; com transação e controle de versão, no máximo uma deve ser aceita sobre aquele estado, e a outra deve receber conflito ou reprocessamento seguro.
+C. Concurrent Commands: simule duas compras sobre a mesma versão esperada no Event Store de teste; compare e atualize a versão de forma indivisível, aceitando no máximo uma compra sobre aquele estado. A outra deve receber conflito ou ser reavaliada sobre o novo estado.
 
-Mostre os passos Command → Validation → Event → Persistence e o resultado. Use dados separados do jogo principal e um botão de reset somente para dados do laboratório. Não apague o Event Store do personagem principal.
+Mostre os passos Command → Validation → Event → Persistence e o resultado. Inclua um botão de reset somente para a memória do laboratório. Explique que essas simulações ensinam os conceitos e não comprovam idempotência ou concorrência do app real em rede.
 ```
 
-**Aceite quando:** o Event Store verdadeiro permanecer intacto e os três experimentos tiverem resultado reproduzível.
+**Aceite quando:** o Event Store verdadeiro permanecer intacto, não houver gravações do laboratório no Firestore e os três experimentos locais tiverem resultado reproduzível.
 
 ---
 
@@ -323,7 +318,9 @@ Revise o RPG Time Machine para publicação no Cloud Run através do Publish do 
 
 Faça build e corrija erros, sem remover funcionalidades nem recriar o banco.
 
-Confira autenticação em todos os endpoints privados; propriedade dos personagens; Firestore seguro; escrita append-only no backend; idempotência; controle de versão; replay determinístico; recuperação após reload; Time Travel sem mutação; responsividade; loading e erros amigáveis.
+Confira Google Sign-In; isolamento por uid; Security Rules permitindo leitura e criação de eventos válidos do próprio usuário e negando acesso sem login, dados alheios, eventos malformados e atualização/exclusão de eventos; transação do SDK web para evento e versão; replay determinístico; ficha reconstruída após reload; Time Travel sem mutação; responsividade; loading e erros amigáveis.
+
+Mantenha a arquitetura React + SDK web do Firebase, sem exigir API própria. As etapas opcionais 6 e 7 não são pré-requisitos para publicar. Informe a limitação da validação de gameplay no navegador, sem apresentá-la como proteção completa contra trapaças.
 
 Não coloque segredos no navegador. Não afrouxe regras ou permissões para fazer a aplicação funcionar.
 
@@ -356,15 +353,22 @@ O deploy deve ocorrer pela interface do AI Studio; **não é necessário instala
 ## Checklist final
 
 - [ ] Criei uma aplicação funcional com React e TypeScript.
-- [ ] Os comandos produzem eventos apenas quando válidos.
-- [ ] Os eventos são imutáveis e ordenados por versão.
+- [ ] Pela interface do jogo, comandos inválidos não produzem eventos.
+- [ ] Os eventos são ordenados por versão e protegidos contra atualização/exclusão pelo cliente.
 - [ ] O estado pode ser reconstruído a partir do Event Store.
 - [ ] O Time Travel não apaga o histórico.
 - [ ] Os eventos persistem no Firestore após reload.
 - [ ] Há autenticação e isolamento entre usuários.
-- [ ] O backend valida comandos e protege as gravações.
+- [ ] O frontend usa o SDK web do Firebase e confirma evento e versão na mesma transação.
+- [ ] As Security Rules validam acesso e formato dos dados; compreendi o limite da validação de gameplay no navegador.
 - [ ] A aplicação está publicada e funcional no Cloud Run.
-- [ ] **Extra:** projeções, snapshots e Debug Lab funcionam.
+- [ ] **Extra:** projeções, snapshots em memória e Debug Lab local funcionam.
+
+## Evolução posterior — validação no servidor
+
+Depois de concluir o percurso principal, uma aplicação que precise impedir trapaças pode mover o processamento dos comandos para uma API Node.js no Cloud Run. Nessa evolução, o servidor valida o Firebase ID Token, a propriedade do personagem e todas as regras de domínio antes de gravar; o cliente deixa de criar eventos diretamente.
+
+Isso exige configurar a identidade de serviço e as permissões IAM de acesso ao Firestore. O SDK administrativo não aplica as Security Rules dos clientes, então a API precisa fazer sua própria autorização. Idempotência de comandos e concorrência em rede também devem ser implementadas e testadas nessa evolução. Esses requisitos não fazem parte da preparação do workshop básico.
 
 ## Quando alguma etapa falhar
 
@@ -379,10 +383,10 @@ A última etapa não passou no teste de aceitação. Inspecione o erro real (con
 | Sintoma | Onde investigar |
 | --- | --- |
 | Login não abre no Preview | Fluxo da integração Firebase e configuração do Authentication |
-| `permission-denied` | Firestore Rules, caminho consultado, ID Token e propriedade do recurso |
-| Eventos duplicados | Idempotency key, retries, transação e versões |
-| Personagem não atualiza | Ordenação por `version`, reducer e leitura da projeção |
-| Duas compras aceitas simultaneamente | Controle otimista e transação atômica no backend |
+| `permission-denied` | Login ativo, uid no caminho, campos enviados e Security Rules da coleção e subcoleções |
+| Eventos duplicados | Registro único de handlers, cliques durante gravação e criação única de CharacterCreated; idempotência de retries é aprofundamento |
+| Personagem não atualiza | Consulta de eventos por `version`, reducer e confirmação da gravação |
+| Outra aba alterou o personagem | Versão usada na validação, transação do SDK web e recarga do histórico antes de repetir a ação |
 | Login funciona no Preview, mas não publicado | Domínios autorizados e configuração de produção |
 | Deploy pede faturamento | Tier, quotas e configuração do projeto Cloud |
 
@@ -408,6 +412,8 @@ Depois da atividade, confira os serviços ativos e eventuais custos no Google Cl
 - [Firebase: integração com Google AI Studio](https://firebase.google.com/docs/ai-assistance/ai-studio-integration)
 - [Google AI Studio — Build Mode](https://ai.google.dev/gemini-api/docs/aistudio-build-mode)
 - [Firestore Security Rules](https://firebase.google.com/docs/firestore/security/get-started)
+- [Condições de acesso e validação nas Security Rules](https://firebase.google.com/docs/firestore/security/rules-conditions)
+- [Transações no Firestore, incluindo SDK web](https://firebase.google.com/docs/firestore/manage-data/transactions)
 - [Cloud Run — Documentação](https://cloud.google.com/run/docs)
 
 **Créditos:** roteiro original de workshop inspirado na organização e no fluxo de publicação do codelab do Google. Este material é uma adaptação independente, com exemplos e prompts próprios.
